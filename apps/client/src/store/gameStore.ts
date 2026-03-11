@@ -21,6 +21,7 @@ interface GameStore {
   // Move staging
   pendingTiles: PlacedTile[]
   selectedRackIndex: number | null
+  equalsSelected: boolean
 
   // Actions
   setPlayerName: (name: string) => void
@@ -35,6 +36,7 @@ interface GameStore {
   removePendingTile: (row: number, col: number) => void
   clearPendingTiles: () => void
   selectRackTile: (index: number | null) => void
+  selectEquals: () => void
 }
 
 export const useGameStore = create<GameStore>((set) => ({
@@ -49,6 +51,7 @@ export const useGameStore = create<GameStore>((set) => ({
   currentPlayer: null,
   pendingTiles: [],
   selectedRackIndex: null,
+  equalsSelected: false,
 
   setPlayerName: (name) => set({ playerName: name }),
 
@@ -87,7 +90,12 @@ export const useGameStore = create<GameStore>((set) => ({
       pendingTiles: state.pendingTiles.filter((t) => !(t.row === row && t.col === col)),
     })),
 
-  clearPendingTiles: () => set({ pendingTiles: [] }),
+  clearPendingTiles: () => set({ pendingTiles: [], selectedRackIndex: null, equalsSelected: false }),
 
-  selectRackTile: (index) => set({ selectedRackIndex: index }),
+  selectRackTile: (index) => set({ selectedRackIndex: index, equalsSelected: false }),
+
+  selectEquals: () => set((state) => ({
+    equalsSelected: !state.equalsSelected,
+    selectedRackIndex: null,
+  })),
 }))

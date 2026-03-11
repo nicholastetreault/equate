@@ -23,7 +23,7 @@ impl fmt::Display for ValidationError {
             Self::NotInLineOrColumn => write!(f, "All tiles must be in the same row or column"),
             Self::OverlapsExistingTile => write!(f, "Tile overlaps an existing tile"),
             Self::DuplicatePosition => write!(f, "Two tiles placed at the same position"),
-            Self::GapInPlacement => write!(f, "Placed tiles must form a contiguous line (no gaps without existing tiles)"),
+            Self::GapInPlacement => write!(f, "No gaps allowed between placed tiles"),
             Self::NotConnected => write!(f, "Tiles must connect to existing tiles"),
             Self::MustCoverCenter => write!(f, "First move must cover the center square"),
             Self::InvalidEquation(s) => write!(f, "Invalid equation: {s}"),
@@ -40,7 +40,6 @@ pub fn validate_move(
         return Err(ValidationError::NoTilesPlaced);
     }
 
-    // No duplicate positions among placed tiles
     let mut seen = HashSet::new();
     for pt in placed {
         if !seen.insert((pt.row, pt.col)) {
@@ -48,29 +47,25 @@ pub fn validate_move(
         }
     }
 
-    // All in the same row or column
     let all_same_row = placed.iter().all(|t| t.row == placed[0].row);
     let all_same_col = placed.iter().all(|t| t.col == placed[0].col);
     if !all_same_row && !all_same_col {
         return Err(ValidationError::NotInLineOrColumn);
     }
 
-    // None overlap existing tiles
     for pt in placed {
         if board.is_occupied(pt.row, pt.col) {
             return Err(ValidationError::OverlapsExistingTile);
         }
     }
 
-    // No gaps: every cell between the min and max position must be filled
-    // (either by a placed tile or an existing board tile)
+    // No gaps within the placement span
     if all_same_row {
         let row = placed[0].row;
         let min_col = placed.iter().map(|t| t.col).min().unwrap();
         let max_col = placed.iter().map(|t| t.col).max().unwrap();
         for col in min_col..=max_col {
-            let from_placed = placed.iter().any(|t| t.col == col);
-            if !from_placed && !board.is_occupied(row, col) {
+            if !placed.iter().any(|t| t.col == col) && !board.is_occupied(row, col) {
                 return Err(ValidationError::GapInPlacement);
             }
         }
@@ -79,8 +74,7 @@ pub fn validate_move(
         let min_row = placed.iter().map(|t| t.row).min().unwrap();
         let max_row = placed.iter().map(|t| t.row).max().unwrap();
         for row in min_row..=max_row {
-            let from_placed = placed.iter().any(|t| t.row == row);
-            if !from_placed && !board.is_occupied(row, col) {
+            if !placed.iter().any(|t| t.row == row) && !board.is_occupied(row, col) {
                 return Err(ValidationError::GapInPlacement);
             }
         }
@@ -91,27 +85,92 @@ pub fn validate_move(
             return Err(ValidationError::MustCoverCenter);
         }
     } else {
-        let connected = placed
-            .iter()
-            .any(|pt| is_adjacent_to_existing(board, pt.row, pt.col));
+        let connected = placed.iter().any(|pt| is_adjacent_to_existing(board, pt.row, pt.col));
         if !connected {
             return Err(ValidationError::NotConnected);
         }
     }
 
-    // Validate all equations formed by this move
     let temp = TempBoard { board, placed };
-    let equations = collect_equations(&temp, placed, all_same_row);
-
-    for eq in &equations {
-        validate_equation(eq)?;
+    for eq in collect_equations(&temp, placed, all_same_row) {
+        validate_equation(&eq)?;
     }
 
     Ok(())
 }
 
 // ---------------------------------------------------------------------------
-// Temporary board view (existing board + tiles being placed)
+// Shared equation position extraction (also used by scoring)
+// ---------------------------------------------------------------------------
+
+/// Returns the (row, col) positions of every tile in each equation formed by this move.
+pub fn equation_positions(
+    board: &Board,
+    placed: &[PlacedTile],
+) -> Vec<Vec<(usize, usize)>> {
+    let all_same_row = placed.iter().all(|t| t.row == placed[0].row);
+    let temp = TempBoard { board, placed };
+    collect_positions(&temp, placed, all_same_row)
+}
+
+fn collect_positions(
+    temp: &TempBoard,
+    placed: &[PlacedTile],
+    horizontal_move: bool,
+) -> Vec<Vec<(usize, usize)>> {
+    let mut result = Vec::new();
+
+    let main: Vec<(usize, usize)> = if horizontal_move {
+        let row = placed[0].row;
+        let min_col = placed.iter().map(|t| t.col).min().unwrap();
+        let max_col = placed.iter().map(|t| t.col).max().unwrap();
+        let start = expand_left(temp, row, min_col, true);
+        let end = expand_right(temp, row, max_col, true);
+        (start..=end)
+            .filter(|&c| temp.get_tile(row, c).is_some())
+            .map(|c| (row, c))
+            .collect()
+    } else {
+        let col = placed[0].col;
+        let min_row = placed.iter().map(|t| t.row).min().unwrap();
+        let max_row = placed.iter().map(|t| t.row).max().unwrap();
+        let start = expand_left(temp, col, min_row, false);
+        let end = expand_right(temp, col, max_row, false);
+        (start..=end)
+            .filter(|&r| temp.get_tile(r, col).is_some())
+            .map(|r| (r, col))
+            .collect()
+    };
+    if main.len() > 1 {
+        result.push(main);
+    }
+
+    for pt in placed {
+        let cross: Vec<(usize, usize)> = if horizontal_move {
+            let start = expand_left(temp, pt.col, pt.row, false);
+            let end = expand_right(temp, pt.col, pt.row, false);
+            (start..=end)
+                .filter(|&r| temp.get_tile(r, pt.col).is_some())
+                .map(|r| (r, pt.col))
+                .collect()
+        } else {
+            let start = expand_left(temp, pt.row, pt.col, true);
+            let end = expand_right(temp, pt.row, pt.col, true);
+            (start..=end)
+                .filter(|&c| temp.get_tile(pt.row, c).is_some())
+                .map(|c| (pt.row, c))
+                .collect()
+        };
+        if cross.len() > 1 {
+            result.push(cross);
+        }
+    }
+
+    result
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
 // ---------------------------------------------------------------------------
 
 struct TempBoard<'a> {
@@ -131,85 +190,32 @@ impl<'a> TempBoard<'a> {
 }
 
 fn is_adjacent_to_existing(board: &Board, row: usize, col: usize) -> bool {
-    [
-        (row.wrapping_sub(1), col),
-        (row + 1, col),
-        (row, col.wrapping_sub(1)),
-        (row, col + 1),
-    ]
-    .iter()
-    .any(|&(r, c)| r < BOARD_SIZE && c < BOARD_SIZE && board.is_occupied(r, c))
+    [(row.wrapping_sub(1), col), (row + 1, col), (row, col.wrapping_sub(1)), (row, col + 1)]
+        .iter()
+        .any(|&(r, c)| r < BOARD_SIZE && c < BOARD_SIZE && board.is_occupied(r, c))
 }
 
-// ---------------------------------------------------------------------------
-// Equation extraction
-// ---------------------------------------------------------------------------
-
-/// Collect all contiguous tile sequences that include at least one newly placed tile.
 fn collect_equations(
     temp: &TempBoard,
     placed: &[PlacedTile],
     horizontal_move: bool,
 ) -> Vec<Vec<TileKind>> {
-    let mut equations = Vec::new();
-
-    // Main-axis run
-    let main = if horizontal_move {
-        let row = placed[0].row;
-        let min_col = placed.iter().map(|t| t.col).min().unwrap();
-        let max_col = placed.iter().map(|t| t.col).max().unwrap();
-        let start = expand_left(temp, row, min_col, true);
-        let end = expand_right(temp, row, max_col, true);
-        (start..=end)
-            .filter_map(|c| temp.get_tile(row, c).map(|t| t.kind.clone()))
-            .collect::<Vec<_>>()
-    } else {
-        let col = placed[0].col;
-        let min_row = placed.iter().map(|t| t.row).min().unwrap();
-        let max_row = placed.iter().map(|t| t.row).max().unwrap();
-        let start = expand_left(temp, col, min_row, false);
-        let end = expand_right(temp, col, max_row, false);
-        (start..=end)
-            .filter_map(|r| temp.get_tile(r, col).map(|t| t.kind.clone()))
-            .collect::<Vec<_>>()
-    };
-    if main.len() > 1 {
-        equations.push(main);
-    }
-
-    // Cross-axis runs through each newly placed tile
-    for pt in placed {
-        let cross = if horizontal_move {
-            let start = expand_left(temp, pt.col, pt.row, false);
-            let end = expand_right(temp, pt.col, pt.row, false);
-            (start..=end)
-                .filter_map(|r| temp.get_tile(r, pt.col).map(|t| t.kind.clone()))
-                .collect::<Vec<_>>()
-        } else {
-            let start = expand_left(temp, pt.row, pt.col, true);
-            let end = expand_right(temp, pt.row, pt.col, true);
-            (start..=end)
-                .filter_map(|c| temp.get_tile(pt.row, c).map(|t| t.kind.clone()))
-                .collect::<Vec<_>>()
-        };
-        if cross.len() > 1 {
-            equations.push(cross);
-        }
-    }
-
-    equations
+    collect_positions(temp, placed, horizontal_move)
+        .into_iter()
+        .map(|positions| {
+            positions
+                .into_iter()
+                .filter_map(|(r, c)| temp.get_tile(r, c).map(|t| t.kind.clone()))
+                .collect()
+        })
+        .collect()
 }
 
-/// Expand left along a row (horizontal=true) or column (horizontal=false).
 fn expand_left(temp: &TempBoard, fixed: usize, anchor: usize, horizontal: bool) -> usize {
     let mut pos = anchor;
     while pos > 0 {
         let (r, c) = if horizontal { (fixed, pos - 1) } else { (pos - 1, fixed) };
-        if temp.get_tile(r, c).is_some() {
-            pos -= 1;
-        } else {
-            break;
-        }
+        if temp.get_tile(r, c).is_some() { pos -= 1; } else { break; }
     }
     pos
 }
@@ -218,11 +224,7 @@ fn expand_right(temp: &TempBoard, fixed: usize, anchor: usize, horizontal: bool)
     let mut pos = anchor;
     loop {
         let (r, c) = if horizontal { (fixed, pos + 1) } else { (pos + 1, fixed) };
-        if r < BOARD_SIZE && c < BOARD_SIZE && temp.get_tile(r, c).is_some() {
-            pos += 1;
-        } else {
-            break;
-        }
+        if r < BOARD_SIZE && c < BOARD_SIZE && temp.get_tile(r, c).is_some() { pos += 1; } else { break; }
     }
     pos
 }
@@ -236,28 +238,42 @@ enum Token {
     Op(Operator),
 }
 
-/// Tokenize tiles into numbers and operators.
-/// Consecutive Number tiles form multi-digit numbers (e.g. 1,2 → 12).
+/// Tokenize a tile sequence into numbers and operators.
+/// Rules:
+///   - Consecutive Number tiles form multi-digit numbers (1,2 → 12)
+///   - A Number tile immediately followed by a Fraction tile is a mixed number (3, 1/4 → 3.25)
+///   - A standalone Fraction tile is its fractional value
 fn tokenize(tiles: &[TileKind]) -> Option<Vec<Token>> {
-    let mut tokens: Vec<Token> = Vec::new();
+    let mut tokens = Vec::new();
     let mut i = 0;
 
     while i < tiles.len() {
         match &tiles[i] {
-            TileKind::Number(n) => {
+            TileKind::Number { value: n } => {
+                // Accumulate multi-digit number
                 let mut num = *n as f64;
                 while i + 1 < tiles.len() {
-                    if let TileKind::Number(next) = tiles[i + 1] {
+                    if let TileKind::Number { value: next } = tiles[i + 1] {
                         num = num * 10.0 + next as f64;
                         i += 1;
                     } else {
                         break;
                     }
                 }
+                // Mixed number: nonzero whole part followed by a fraction
+                if num != 0.0 {
+                    if let Some(TileKind::Fraction { numerator, denominator }) = tiles.get(i + 1) {
+                        num += *numerator as f64 / *denominator as f64;
+                        i += 1;
+                    }
+                }
                 tokens.push(Token::Number(num));
             }
-            TileKind::Operator(op) => tokens.push(Token::Op(op.clone())),
-            TileKind::Equals => return None, // = is not a valid token in an expression
+            TileKind::Fraction { numerator, denominator } => {
+                tokens.push(Token::Number(*numerator as f64 / *denominator as f64));
+            }
+            TileKind::Operator { op } => tokens.push(Token::Op(op.clone())),
+            TileKind::Equals => return None,
         }
         i += 1;
     }
@@ -265,7 +281,9 @@ fn tokenize(tiles: &[TileKind]) -> Option<Vec<Token>> {
     Some(tokens)
 }
 
-/// Evaluate a simple arithmetic expression with correct operator precedence (* / before + -).
+/// Evaluate an arithmetic expression with correct operator precedence.
+/// Returns None if the expression is malformed, involves division by zero,
+/// or any intermediate subtraction produces a negative result (Original Tile Set rule).
 fn evaluate_expression(tiles: &[TileKind]) -> Option<f64> {
     let tokens = tokenize(tiles)?;
 
@@ -283,7 +301,7 @@ fn evaluate_expression(tiles: &[TileKind]) -> Option<f64> {
         return None;
     }
 
-    // First pass: * and /
+    // First pass: * and / (left to right within same precedence)
     let mut i = 0;
     while i < ops.len() {
         match &ops[i] {
@@ -294,8 +312,8 @@ fn evaluate_expression(tiles: &[TileKind]) -> Option<f64> {
                 ops.remove(i);
             }
             Operator::Divide => {
-                if values[i + 1] == 0.0 {
-                    return None;
+                if values[i + 1].abs() < f64::EPSILON {
+                    return None; // division by zero
                 }
                 let result = values[i] / values[i + 1];
                 values[i] = result;
@@ -306,12 +324,17 @@ fn evaluate_expression(tiles: &[TileKind]) -> Option<f64> {
         }
     }
 
-    // Second pass: + and -
+    // Second pass: + and - (left to right); subtraction must never go negative
     let mut result = values[0];
     for (i, op) in ops.iter().enumerate() {
         match op {
             Operator::Add => result += values[i + 1],
-            Operator::Subtract => result -= values[i + 1],
+            Operator::Subtract => {
+                result -= values[i + 1];
+                if result < -f64::EPSILON * 1000.0 {
+                    return None; // Original Tile Set: no negative intermediate results
+                }
+            }
             _ => return None,
         }
     }
@@ -320,6 +343,7 @@ fn evaluate_expression(tiles: &[TileKind]) -> Option<f64> {
 }
 
 fn validate_equation(tiles: &[TileKind]) -> Result<(), ValidationError> {
+    // Must have exactly one equals sign
     let eq_positions: Vec<usize> = tiles
         .iter()
         .enumerate()
@@ -329,7 +353,7 @@ fn validate_equation(tiles: &[TileKind]) -> Result<(), ValidationError> {
 
     if eq_positions.len() != 1 {
         return Err(ValidationError::InvalidEquation(format!(
-            "must have exactly one = sign (found {})",
+            "must have exactly one = (found {})",
             eq_positions.len()
         )));
     }
@@ -339,9 +363,7 @@ fn validate_equation(tiles: &[TileKind]) -> Result<(), ValidationError> {
     let rhs = &tiles[eq_pos + 1..];
 
     if lhs.is_empty() || rhs.is_empty() {
-        return Err(ValidationError::InvalidEquation(
-            "empty side of equation".into(),
-        ));
+        return Err(ValidationError::InvalidEquation("empty side of equation".into()));
     }
 
     let lhs_val = evaluate_expression(lhs)
@@ -350,9 +372,7 @@ fn validate_equation(tiles: &[TileKind]) -> Result<(), ValidationError> {
         .ok_or_else(|| ValidationError::InvalidEquation("invalid right-hand expression".into()))?;
 
     if (lhs_val - rhs_val).abs() > f64::EPSILON * 1000.0 {
-        return Err(ValidationError::InvalidEquation(format!(
-            "{lhs_val} ≠ {rhs_val}"
-        )));
+        return Err(ValidationError::InvalidEquation(format!("{lhs_val} ≠ {rhs_val}")));
     }
 
     Ok(())
@@ -367,8 +387,9 @@ mod tests {
     use super::*;
     use crate::tile::{Operator, Tile, TileKind};
 
-    fn num(n: u8) -> TileKind { TileKind::Number(n) }
-    fn op(o: Operator) -> TileKind { TileKind::Operator(o) }
+    fn num(n: u8) -> TileKind { TileKind::Number { value: n } }
+    fn frac(n: u8, d: u8) -> TileKind { TileKind::Fraction { numerator: n, denominator: d } }
+    fn op(o: Operator) -> TileKind { TileKind::Operator { op: o } }
     fn eq() -> TileKind { TileKind::Equals }
 
     fn placed(tile: Tile, row: usize, col: usize) -> PlacedTile {
@@ -377,36 +398,56 @@ mod tests {
 
     #[test]
     fn valid_simple_equation() {
-        let tiles = vec![num(3), op(Operator::Add), num(4), eq(), num(7)];
-        assert!(validate_equation(&tiles).is_ok());
+        // 3 + 4 = 7
+        assert!(validate_equation(&[num(3), op(Operator::Add), num(4), eq(), num(7)]).is_ok());
     }
 
     #[test]
     fn invalid_equation() {
-        let tiles = vec![num(3), op(Operator::Add), num(4), eq(), num(8)];
-        assert!(validate_equation(&tiles).is_err());
+        assert!(validate_equation(&[num(3), op(Operator::Add), num(4), eq(), num(8)]).is_err());
     }
 
     #[test]
     fn multi_digit_numbers() {
-        // 12 + 3 = 15
-        let tiles = vec![num(1), num(2), op(Operator::Add), num(3), eq(), num(1), num(5)];
-        assert!(validate_equation(&tiles).is_ok());
+        // 24 ÷ 3 = 8
+        assert!(validate_equation(&[num(2), num(4), op(Operator::Divide), num(3), eq(), num(8)]).is_ok());
     }
 
     #[test]
     fn operator_precedence() {
-        // 2 + 3 * 4 = 14
-        let tiles = vec![num(2), op(Operator::Add), num(3), op(Operator::Multiply), num(4), eq(), num(1), num(4)];
-        assert!(validate_equation(&tiles).is_ok());
+        // 2 + 3 × 4 = 14
+        assert!(validate_equation(&[num(2), op(Operator::Add), num(3), op(Operator::Multiply), num(4), eq(), num(1), num(4)]).is_ok());
+    }
+
+    #[test]
+    fn fractions() {
+        // 1/2 + 1/2 = 1
+        assert!(validate_equation(&[frac(1, 2), op(Operator::Add), frac(1, 2), eq(), num(1)]).is_ok());
+    }
+
+    #[test]
+    fn mixed_numbers() {
+        // 3 1/4 = 13/4  →  3.25 = 3.25
+        assert!(validate_equation(&[num(3), frac(1, 4), eq(), num(1), num(3), op(Operator::Divide), num(4)]).is_ok());
+    }
+
+    #[test]
+    fn negative_intermediate_rejected() {
+        // 4 − 6 + 7 = 5: both sides equal 5 but left side goes negative at (4-6)
+        assert!(validate_equation(&[num(4), op(Operator::Subtract), num(6), op(Operator::Add), num(7), eq(), num(5)]).is_err());
+    }
+
+    #[test]
+    fn zero_subtraction_allowed() {
+        // 7 − 7 = 0
+        assert!(validate_equation(&[num(7), op(Operator::Subtract), num(7), eq(), num(0)]).is_ok());
     }
 
     #[test]
     fn first_move_must_cover_center() {
         let board = Board::new();
-        let tiles = vec![placed(Tile::number(1), 0, 0)];
         assert!(matches!(
-            validate_move(&board, &tiles, true),
+            validate_move(&board, &[placed(Tile::number(1), 0, 0)], true),
             Err(ValidationError::MustCoverCenter)
         ));
     }

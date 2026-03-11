@@ -168,10 +168,19 @@ async fn handle_client_message(
                 return;
             }
 
+            let rack_size = room.players.iter()
+                .find(|p| p.id == player_id)
+                .map(|p| p.rack.len())
+                .unwrap_or(0);
+
             let move_result = match &mut room.game_state {
-                Some(state) => match state.apply_move(&tiles) {
+                Some(state) => match state.apply_move(&tiles, rack_size) {
                     Ok(score) => {
-                        let new_rack = state.draw_tiles(tiles.len());
+                        // Only replenish the non-equals tiles (equals are always available)
+                        let rack_tiles_used = tiles.iter()
+                            .filter(|pt| !matches!(pt.tile.kind, game_engine::TileKind::Equals))
+                            .count();
+                        let new_rack = state.draw_tiles(rack_tiles_used);
                         let board = state.board.clone();
                         Ok((score, new_rack, board))
                     }

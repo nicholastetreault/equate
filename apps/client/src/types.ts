@@ -2,6 +2,7 @@
 
 export type TileKind =
   | { type: 'Number'; value: number }
+  | { type: 'Fraction'; numerator: number; denominator: number }
   | { type: 'Operator'; op: 'Add' | 'Subtract' | 'Multiply' | 'Divide' }
   | { type: 'Equals' }
 
@@ -43,20 +44,8 @@ export interface PlayerScore {
 export type ServerMessage =
   | { type: 'room_joined'; room_code: string; player_id: string }
   | { type: 'waiting_for_opponent' }
-  | {
-      type: 'game_started'
-      board: Board
-      your_rack: Tile[]
-      players: PlayerInfo[]
-      current_player: string
-    }
-  | {
-      type: 'move_accepted'
-      board: Board
-      scores: PlayerScore[]
-      next_player: string
-      your_new_rack: Tile[] | null
-    }
+  | { type: 'game_started'; board: Board; your_rack: Tile[]; players: PlayerInfo[]; current_player: string }
+  | { type: 'move_accepted'; board: Board; scores: PlayerScore[]; next_player: string; your_new_rack: Tile[] | null }
   | { type: 'move_rejected'; reason: string }
   | { type: 'turn_changed'; current_player: string }
   | { type: 'game_over'; scores: PlayerScore[]; winner: string }
@@ -66,3 +55,18 @@ export type ClientMessage =
   | { type: 'place_tiles'; tiles: PlacedTile[] }
   | { type: 'exchange_tiles'; indices: number[] }
   | { type: 'pass_turn' }
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+export function tileLabel(tile: Tile): string {
+  switch (tile.kind.type) {
+    case 'Number': return String(tile.kind.value)
+    case 'Fraction': return `${tile.kind.numerator}/${tile.kind.denominator}`
+    case 'Operator': return { Add: '+', Subtract: '−', Multiply: '×', Divide: '÷' }[tile.kind.op]
+    case 'Equals': return '='
+  }
+}
+
+export function makeEqualsTile(): Tile {
+  return { kind: { type: 'Equals' }, point_value: 0 }
+}

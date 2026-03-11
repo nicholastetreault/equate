@@ -66,7 +66,7 @@ impl Room {
     pub fn start_game(&mut self) {
         let mut state = GameState::new();
         for player in &mut self.players {
-            player.rack = state.draw_tiles(7);
+            player.rack = state.draw_tiles(9);
         }
         self.game_state = Some(state);
     }
