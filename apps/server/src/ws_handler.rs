@@ -24,15 +24,15 @@ async fn handle_socket(
     player_id: String,
     rooms: RoomMap,
 ) {
-    let (mut sender, mut receiver) = socket.split();
+    let (mut ws_sender, mut ws_receiver) = socket.split();
 
-    // Register connection and subscribe to room broadcasts
-    let (rx, initial_msg) = {
+    // Register this connection and queue any initial messages before releasing the lock.
+    let rx = {
         let mut rooms_w = rooms.write().await;
         let room = match rooms_w.get_mut(&room_code) {
             Some(r) => r,
             None => {
-                let _ = sender
+                let _ = ws_sender
                     .send(Message::Text(
                         serde_json::to_string(&ServerMessage::Error {
                             message: "Room not found".into(),
@@ -45,7 +45,7 @@ async fn handle_socket(
         };
 
         if !room.has_player(&player_id) {
-            let _ = sender
+            let _ = ws_sender
                 .send(Message::Text(
                     serde_json::to_string(&ServerMessage::Error {
                         message: "Player not in room".into(),
@@ -56,85 +56,72 @@ async fn handle_socket(
             return;
         }
 
-        room.ws_connected += 1;
-        let rx = room.tx.subscribe();
+        // Register gives us the receiver end of this player's private channel.
+        let rx = room.register_ws(player_id.clone());
 
-        // Determine what to send immediately after connecting
-        let initial = if room.game_state.is_some() {
-            // Game already started — send current state to this player
+        if room.game_state.is_some() {
+            // Reconnecting mid-game — send current state to just this player.
             let state = room.game_state.as_ref().unwrap();
-            let rack = room
-                .players
-                .iter()
-                .find(|p| p.id == player_id)
-                .map(|p| p.rack.clone())
-                .unwrap_or_default();
-            let players: Vec<PlayerInfo> = room
-                .players
-                .iter()
-                .map(|p| PlayerInfo { id: p.id.clone(), name: p.name.clone() })
-                .collect();
-            Some(ServerMessage::GameStarted {
-                board: state.board.clone(),
-                your_rack: rack,
-                players,
-                current_player: room.current_player_id().unwrap_or("").to_string(),
-            })
+            let players = player_infos(room);
+            room.send_to(
+                &player_id,
+                ServerMessage::GameStarted {
+                    board: state.board.clone(),
+                    your_rack: room.player_rack(&player_id),
+                    players,
+                    current_player: room.current_player_id().unwrap_or("").to_string(),
+                },
+            );
         } else if room.should_start() {
-            // This connection brings us to 2 players — start the game
+            // All players connected — start the game.
             room.start_game();
             let state = room.game_state.as_ref().unwrap();
-            let players: Vec<PlayerInfo> = room
+            let players = player_infos(room);
+            let current = room.current_player_id().unwrap_or("").to_string();
+            let board = state.board.clone();
+
+            // Send each player their own GameStarted with their own rack.
+            let racks: Vec<(String, Vec<_>)> = room
                 .players
                 .iter()
-                .map(|p| PlayerInfo { id: p.id.clone(), name: p.name.clone() })
+                .map(|p| (p.id.clone(), p.rack.clone()))
                 .collect();
-            let current = room.current_player_id().unwrap_or("").to_string();
 
-            // Broadcast GameStarted with each player's individual rack via the channel
-            for player in &room.players {
-                let msg = ServerMessage::GameStarted {
-                    board: state.board.clone(),
-                    your_rack: player.rack.clone(),
-                    players: players.clone(),
-                    current_player: current.clone(),
-                };
-                let _ = room.tx.send(msg);
+            for (pid, rack) in racks {
+                room.send_to(
+                    &pid,
+                    ServerMessage::GameStarted {
+                        board: board.clone(),
+                        your_rack: rack,
+                        players: players.clone(),
+                        current_player: current.clone(),
+                    },
+                );
             }
-            None // already broadcast above
         } else {
-            Some(ServerMessage::WaitingForOpponent)
-        };
+            room.send_to(&player_id, ServerMessage::WaitingForOpponent);
+        }
 
-        (rx, initial)
+        rx
     };
 
-    // Send the initial message if any
-    if let Some(msg) = initial_msg {
-        let text = serde_json::to_string(&msg).unwrap();
-        if sender.send(Message::Text(text)).await.is_err() {
-            cleanup(&rooms, &room_code).await;
-            return;
-        }
-    }
-
-    // Forward broadcast messages to this client
+    // Forward messages from this player's channel to their WebSocket.
     let mut rx = rx;
     let mut send_task = tokio::spawn(async move {
-        while let Ok(msg) = rx.recv().await {
+        while let Some(msg) = rx.recv().await {
             let text = serde_json::to_string(&msg).unwrap();
-            if sender.send(Message::Text(text)).await.is_err() {
+            if ws_sender.send(Message::Text(text)).await.is_err() {
                 break;
             }
         }
     });
 
-    // Handle incoming client messages
+    // Handle messages coming in from this player's WebSocket.
     let rooms_clone = rooms.clone();
     let room_code_clone = room_code.clone();
     let player_id_clone = player_id.clone();
     let mut recv_task = tokio::spawn(async move {
-        while let Some(Ok(msg)) = receiver.next().await {
+        while let Some(Ok(msg)) = ws_receiver.next().await {
             if let Message::Text(text) = msg {
                 if let Ok(client_msg) = serde_json::from_str::<ClientMessage>(&text) {
                     handle_client_message(
@@ -154,13 +141,9 @@ async fn handle_socket(
         _ = &mut recv_task => send_task.abort(),
     }
 
-    cleanup(&rooms, &room_code).await;
-}
-
-async fn cleanup(rooms: &RoomMap, room_code: &str) {
     let mut rooms_w = rooms.write().await;
-    if let Some(room) = rooms_w.get_mut(room_code) {
-        room.ws_connected = room.ws_connected.saturating_sub(1);
+    if let Some(room) = rooms_w.get_mut(&room_code) {
+        room.unregister_ws(&player_id);
     }
 }
 
@@ -179,14 +162,12 @@ async fn handle_client_message(
             };
 
             if room.current_player_id() != Some(player_id) {
-                let _ = room.tx.send(ServerMessage::MoveRejected {
+                room.send_to(player_id, ServerMessage::MoveRejected {
                     reason: "Not your turn".into(),
                 });
                 return;
             }
 
-            // Apply the move and collect results while holding the game_state borrow,
-            // then release it before calling methods that need &mut room again.
             let move_result = match &mut room.game_state {
                 Some(state) => match state.apply_move(&tiles) {
                     Ok(score) => {
@@ -209,15 +190,25 @@ async fn handle_client_message(
                     let scores = room.scores();
                     let next_player = room.current_player_id().unwrap_or("").to_string();
 
-                    let _ = room.tx.send(ServerMessage::MoveAccepted {
-                        board,
-                        scores,
-                        next_player,
-                        your_new_rack: Some(new_rack),
-                    });
+                    // Send the mover their new rack; everyone else gets None.
+                    let player_ids: Vec<String> =
+                        room.players.iter().map(|p| p.id.clone()).collect();
+
+                    for pid in &player_ids {
+                        let rack = if pid == player_id { Some(new_rack.clone()) } else { None };
+                        room.send_to(
+                            pid,
+                            ServerMessage::MoveAccepted {
+                                board: board.clone(),
+                                scores: scores.clone(),
+                                next_player: next_player.clone(),
+                                your_new_rack: rack,
+                            },
+                        );
+                    }
                 }
                 Err(reason) => {
-                    let _ = room.tx.send(ServerMessage::MoveRejected { reason });
+                    room.send_to(player_id, ServerMessage::MoveRejected { reason });
                 }
             }
         }
@@ -231,7 +222,7 @@ async fn handle_client_message(
             if room.current_player_id() == Some(player_id) {
                 room.advance_turn();
                 let next = room.current_player_id().unwrap_or("").to_string();
-                let _ = room.tx.send(ServerMessage::TurnChanged { current_player: next });
+                room.broadcast(ServerMessage::TurnChanged { current_player: next });
             }
         }
 
@@ -239,4 +230,11 @@ async fn handle_client_message(
             // TODO: implement tile exchange
         }
     }
+}
+
+fn player_infos(room: &crate::room::Room) -> Vec<PlayerInfo> {
+    room.players
+        .iter()
+        .map(|p| PlayerInfo { id: p.id.clone(), name: p.name.clone() })
+        .collect()
 }
