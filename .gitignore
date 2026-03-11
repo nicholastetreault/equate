@@ -1,0 +1,21 @@
+# Rust
+target/
+*.pdb
+
+# Node
+node_modules/
+dist/
+.pnpm-store/
+
+# WASM build output
+apps/client/src/wasm/
+
+# Environment
+.env
+.env.local
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo

@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "apps/server",
+    "packages/game-engine",
+]
+resolver = "2"
