@@ -1,5 +1,7 @@
 # EQUATE ONLINE
 
+## NOTE: This repo is almost entirely vibe-coded!
+
 A math-based board game inspired by Equate, playable by multiple people over the internet. Think Scrabble, but tiles are numbers and mathematical operators, and valid moves form correct equations on the board.
 
 ---
