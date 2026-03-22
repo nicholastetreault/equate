@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::tile::Tile;
 
-pub const BOARD_SIZE: usize = 15;
-pub const CENTER: usize = 7;
+pub const BOARD_SIZE: usize = 19;
+pub const CENTER: usize = 9;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum PremiumSquare {
@@ -60,51 +60,80 @@ impl Default for Board {
     }
 }
 
-/// Premium square layout mapped from the official Equate board image.
-/// Board is 15×15, center at (7,7) = 2E.
-/// Symmetric across both axes.
+/// Premium square layout from the official Equate board.
+/// Board is 19×19, center at (9,9) = 2E.
+/// Rows 10–18 are the vertical mirror of rows 8–0.
+///
+/// Parsed from user-supplied matrix:
+/// Row 0:  [0,3E,0,0,0,3S,0,0,0,2S,0,0,0,3S,0,0,0,3E,0]
+/// Row 1:  [3E,0,0,0,3S,0,0,0,2S,0,2S,0,0,0,3S,0,0,0,3E]
+/// Row 2:  [0,0,0,2E,0,0,0,2S,0,0,0,2S,0,0,0,2E,0,0,0]
+/// Row 3:  [0,0,3E,0,0,0,3S,0,0,0,0,0,3S,0,0,0,2E,0,0]
+/// Row 4:  [0,3S,0,0,0,2S,0,0,0,3S,0,0,0,2S,0,0,0,3S,0]
+/// Row 5:  [3S,0,0,0,2S,0,0,0,3S,0,3S,0,0,0,2S,0,0,0,3S]
+/// Row 6:  [0,0,0,3S,0,0,0,2S,0,0,0,2S,0,0,0,3S,0,0,0]
+/// Row 7:  [0,0,2S,0,0,0,2S,0,0,0,0,0,2S,0,0,0,2S,0,0]
+/// Row 8:  [0,2S,0,0,0,3S,0,0,2S,0,2S,0,0,3S,0,0,0,2S,0]
+/// Row 9:  [2S,0,0,0,3S,0,0,0,0,2E,0,0,0,0,3S,0,0,0,2S]
+/// Rows 10–18 mirror rows 8–0.
 fn premium_squares() -> Vec<(usize, usize, PremiumSquare)> {
     use PremiumSquare::*;
-    vec![
-        // ── 3E (TripleEquation) — pink, outer corners ────────────────────
-        (0, 0, TripleEquation),  (0, 14, TripleEquation),
-        (1, 0, TripleEquation),  (1, 14, TripleEquation),
-        (13, 0, TripleEquation), (13, 14, TripleEquation),
-        (14, 0, TripleEquation), (14, 14, TripleEquation),
 
-        // ── 2E (DoubleEquation) — dark purple ────────────────────────────
-        (2, 2, DoubleEquation),  (2, 12, DoubleEquation),
-        (3, 2, DoubleEquation),  (3, 12, DoubleEquation),
-        (7, 7, DoubleEquation),  // center
-        (11, 2, DoubleEquation), (11, 12, DoubleEquation),
-        (12, 2, DoubleEquation), (12, 12, DoubleEquation),
+    let top_half: Vec<(usize, usize, PremiumSquare)> = vec![
+        // ── Row 0 ────────────────────────────────────────────────────────────
+        (0, 1, TripleEquation), (0, 17, TripleEquation),
+        (0, 5, TripleTile),     (0, 13, TripleTile),
+        (0, 9, DoubleTile),
 
-        // ── 3S (TripleTile) — green ───────────────────────────────────────
-        (0, 3, TripleTile),  (0, 11, TripleTile),
-        (1, 3, TripleTile),  (1, 11, TripleTile),
-        (3, 4, TripleTile),  (3, 10, TripleTile),
-        (4, 0, TripleTile),  (4, 7, TripleTile),  (4, 14, TripleTile),
-        (5, 0, TripleTile),  (5, 5, TripleTile),  (5, 9, TripleTile),  (5, 14, TripleTile),
-        (7, 4, TripleTile),  (7, 10, TripleTile),
-        (9, 0, TripleTile),  (9, 5, TripleTile),  (9, 9, TripleTile),  (9, 14, TripleTile),
-        (10, 0, TripleTile), (10, 7, TripleTile), (10, 14, TripleTile),
-        (11, 4, TripleTile), (11, 10, TripleTile),
-        (13, 3, TripleTile), (13, 11, TripleTile),
-        (14, 3, TripleTile), (14, 11, TripleTile),
+        // ── Row 1 ────────────────────────────────────────────────────────────
+        (1, 0, TripleEquation), (1, 18, TripleEquation),
+        (1, 4, TripleTile),     (1, 14, TripleTile),
+        (1, 8, DoubleTile),     (1, 10, DoubleTile),
 
-        // ── 2S (DoubleTile) — teal/light blue ────────────────────────────
-        (0, 7, DoubleTile),
-        (1, 5, DoubleTile),  (1, 9, DoubleTile),
-        (2, 5, DoubleTile),  (2, 9, DoubleTile),
-        (4, 4, DoubleTile),  (4, 10, DoubleTile),
-        (5, 3, DoubleTile),  (5, 11, DoubleTile),
-        (6, 3, DoubleTile),  (6, 11, DoubleTile),
-        (7, 0, DoubleTile),  (7, 14, DoubleTile),
-        (8, 3, DoubleTile),  (8, 11, DoubleTile),
-        (9, 3, DoubleTile),  (9, 11, DoubleTile),
-        (10, 4, DoubleTile), (10, 10, DoubleTile),
-        (12, 5, DoubleTile), (12, 9, DoubleTile),
-        (13, 5, DoubleTile), (13, 9, DoubleTile),
-        (14, 7, DoubleTile),
-    ]
+        // ── Row 2 ────────────────────────────────────────────────────────────
+        (2, 3, DoubleEquation), (2, 15, DoubleEquation),
+        (2, 7, DoubleTile),     (2, 11, DoubleTile),
+
+        // ── Row 3 ────────────────────────────────────────────────────────────
+        (3, 2, DoubleEquation), (3, 16, DoubleEquation),
+        (3, 6, TripleTile),     (3, 12, TripleTile),
+
+        // ── Row 4 ────────────────────────────────────────────────────────────
+        (4, 1, TripleTile),     (4, 9, TripleTile),     (4, 17, TripleTile),
+        (4, 5, DoubleTile),     (4, 13, DoubleTile),
+
+        // ── Row 5 ────────────────────────────────────────────────────────────
+        (5, 0, TripleTile),     (5, 8, TripleTile),
+        (5, 10, TripleTile),    (5, 18, TripleTile),
+        (5, 4, DoubleTile),     (5, 14, DoubleTile),
+
+        // ── Row 6 ────────────────────────────────────────────────────────────
+        (6, 3, TripleTile),     (6, 15, TripleTile),
+        (6, 7, DoubleTile),     (6, 11, DoubleTile),
+
+        // ── Row 7 ────────────────────────────────────────────────────────────
+        (7, 2, DoubleTile),     (7, 6, DoubleTile),
+        (7, 12, DoubleTile),    (7, 16, DoubleTile),
+
+        // ── Row 8 ────────────────────────────────────────────────────────────
+        (8, 1, DoubleTile),     (8, 8, DoubleTile),
+        (8, 10, DoubleTile),    (8, 17, DoubleTile),
+        (8, 5, TripleTile),     (8, 13, TripleTile),
+
+        // ── Row 9 (center row) ───────────────────────────────────────────────
+        (9, 0, DoubleTile),     (9, 18, DoubleTile),
+        (9, 4, TripleTile),     (9, 14, TripleTile),
+        (9, 9, DoubleEquation), // CENTER
+    ];
+
+    // Mirror rows 8–0 onto rows 10–18
+    let mut all = top_half;
+    for (row, col, ref premium) in all.clone() {
+        if row < 9 {
+            let mirrored_row = 18 - row;
+            all.push((mirrored_row, col, premium.clone()));
+        }
+    }
+
+    all
 }

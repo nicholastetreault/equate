@@ -180,9 +180,9 @@ async fn handle_client_message(
                         let rack_tiles_used = tiles.iter()
                             .filter(|pt| !matches!(pt.tile.kind, game_engine::TileKind::Equals))
                             .count();
-                        let new_rack = state.draw_tiles(rack_tiles_used);
+                        let new_tiles = state.draw_tiles(rack_tiles_used);
                         let board = state.board.clone();
-                        Ok((score, new_rack, board))
+                        Ok((score, new_tiles, board))
                     }
                     Err(reason) => Err(reason),
                 },
@@ -190,11 +190,26 @@ async fn handle_client_message(
             };
 
             match move_result {
-                Ok((score, new_rack, board)) => {
-                    if let Some(player) = room.players.iter_mut().find(|p| p.id == player_id) {
+                Ok((score, new_tiles, board)) => {
+                    // Remove placed tiles from the player's rack, then replenish.
+                    let updated_rack = {
+                        let player = room.players.iter_mut()
+                            .find(|p| p.id == player_id)
+                            .unwrap();
                         player.score += score;
-                        player.rack = new_rack.clone();
-                    }
+                        for placed in tiles.iter()
+                            .filter(|pt| !matches!(pt.tile.kind, game_engine::TileKind::Equals))
+                        {
+                            if let Some(pos) = player.rack.iter()
+                                .position(|t| t.kind == placed.tile.kind)
+                            {
+                                player.rack.remove(pos);
+                            }
+                        }
+                        player.rack.extend(new_tiles);
+                        player.rack.clone()
+                    };
+
                     room.advance_turn();
                     let scores = room.scores();
                     let next_player = room.current_player_id().unwrap_or("").to_string();
@@ -204,7 +219,7 @@ async fn handle_client_message(
                         room.players.iter().map(|p| p.id.clone()).collect();
 
                     for pid in &player_ids {
-                        let rack = if pid == player_id { Some(new_rack.clone()) } else { None };
+                        let rack = if pid == player_id { Some(updated_rack.clone()) } else { None };
                         room.send_to(
                             pid,
                             ServerMessage::MoveAccepted {
